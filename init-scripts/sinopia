@@ -1,0 +1,161 @@
+#!/bin/bash
+# sinopia init script v1.2.0
+# (c) 2015 Chris Talkington
+
+### BEGIN INIT INFO
+# Provides:             sinopia
+# Required-Start:       $syslog $remote_fs
+# Required-Stop:        $syslog $remote_fs
+# Should-Start:         $local_fs
+# Should-Stop:          $local_fs
+# Default-Start:        2 3 4 5
+# Default-Stop:         0 1 6
+# Short-Description:    sinopia - private npm repository server
+# Description:          sinopia - private npm repository server
+### END INIT INFO
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+APPNAME="sinopia"
+APPROOT="/var/www/sinopia"
+DESC="private npm repository"
+
+DAEMON=$APPROOT/.nvm/nvm-exec
+DAEMON_ARGS="sinopia -c $APPROOT/$APPNAME/config.yaml"
+DAEMON_USER="sinopia:sinopia"
+
+PIDFILE="/var/run/$APPNAME.pid"
+LOGFILE="/var/log/$APPNAME.log"
+
+NODE_CMD="cd $APPROOT && exec $DAEMON $DAEMON_ARGS >>$LOGFILE 2>&1"
+
+[ -r /etc/default/$APPNAME ] && . /etc/default/$APPNAME
+
+if [ ! -e "$LOGFILE" ]; then
+  touch "$LOGFILE"
+fi
+
+chown $DAEMON_USER "$LOGFILE"
+
+test -x $DAEMON || exit 0
+
+. /lib/init/vars.sh
+. /lib/lsb/init-functions
+
+# VERBOSE=yes
+
+#
+# Function that starts the daemon/service
+#
+do_start()
+{
+  # Return
+  #   0 if daemon has been started
+  #   1 if daemon was already running
+  #   2 if daemon could not be started
+  start-stop-daemon --start --quiet --chuid $DAEMON_USER --pidfile $PIDFILE --background --exec $DAEMON --test > /dev/null \
+    || { [ "$VERBOSE" != no ] && log_daemon_msg  "  --->  Daemon already running $DESC" "pid=$PIDFILE"; return 1; }
+  start-stop-daemon --start --quiet --chuid $DAEMON_USER --make-pidfile --pidfile $PIDFILE --background --exec $DAEMON --startas /bin/bash -- -c "$NODE_CMD" \
+    || { [ "$VERBOSE" != no ] && log_daemon_msg  "  --->  could not start $DESC" "pid=$PIDFILE"; return 2; }
+  [ "$VERBOSE" != no ] && log_daemon_msg  "  --->  started $DESC" "pid=$PIDFILE"
+}
+
+#
+# Function that stops the daemon/service
+#
+do_stop()
+{
+
+  # If the $PID file exists
+  # Detect child processes (nvm is the parent with a single node child)
+  if [ -f $PIDFILE ];
+  then
+
+    # FUTURE improvement ??? --- until we all move to systemd?
+    #http://stackoverflow.com/questions/1570262/shell-get-exit-code-of-background-process
+
+    # readin the parent PID
+    read PARENTID <$PIDFILE
+
+    # graceful exit
+    pkill -TERM -P $PARENTID
+
+    sleep 1
+  fi
+
+  # Return
+  #   0 if daemon has been stopped
+  #   1 if daemon was already stopped
+  #   2 if daemon could not be stopped
+  #   other if a failure occurred
+  start-stop-daemon --stop --quiet --chuid $DAEMON_USER --retry=TERM/30/KILL/5 --pidfile $PIDFILE
+  RETVAL="$?"
+
+  sleep 1
+  return "$RETVAL"
+}
+
+#
+# Rotate log files
+#
+do_rotate() {
+  start-stop-daemon --stop --signal USR1 --quiet --chuid $DAEMON_USER --pidfile $PIDFILE --name $APPNAME
+  return 0
+}
+
+case "$1" in
+  start)
+    [ "$VERBOSE" != no ] && log_daemon_msg "Starting $DESC" "pid=$PIDFILE"
+    do_start
+    case "$?" in
+      0|1) [ "$VERBOSE" != no ] && log_end_msg 0 ;;
+      2) [ "$VERBOSE" != no ] && log_end_msg 1 ;;
+    esac
+    ;;
+  stop)
+    [ "$VERBOSE" != no ] && log_daemon_msg "Stopping $DESC" "pid=$PIDFILE"
+    do_stop
+    case "$?" in
+      0|1) [ "$VERBOSE" != no ] && log_end_msg 0 ;;
+      2) [ "$VERBOSE" != no ] && log_end_msg 1 ;;
+    esac
+    ;;
+  restart)
+    log_daemon_msg "Restarting $DESC" "pid=$PIDFILE"
+
+    # Future
+    # Check configuration before stopping the node-zazzy instance
+    #if ! test_nginx_config; then
+    # log_end_msg 1 # Configuration error
+    # exit 0
+    #fi
+
+    do_stop
+    case "$?" in
+      0|1)
+        do_start
+        case "$?" in
+          0) log_end_msg 0 ;;
+          1) log_end_msg 1 ;; # Old process is still running
+          *) log_end_msg 1 ;; # Failed to start
+        esac
+        ;;
+      *)
+        # Failed to stop
+        log_end_msg 1
+        ;;
+    esac
+    ;;
+  status)
+    status_of_proc -p $PIDFILE "$DAEMON" "$APPNAME" && exit 0 || exit $?
+    ;;
+  rotate)
+    log_daemon_msg "Re-opening $DESC log files" "$APPNAME"
+    do_rotate
+    log_end_msg $?
+    ;;
+  *)
+    echo "Usage: $APPNAME {start|stop|restart|rotate}" >&2
+    exit 3
+    ;;
+esac
